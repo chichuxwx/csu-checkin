@@ -1,28 +1,41 @@
 name: 平安打卡
-run-name: ${{ github.event_name == 'schedule' && '每日平安打卡' || '手动验证与邮件测试（不提交打卡）' }}
+run-name: ${{ github.event_name == 'schedule' && '每日平安打卡及补触发' || inputs.mode == 'checkin' && '手动补打平安打卡' || '手动验证与邮件测试（不提交打卡）' }}
+
 on:
   schedule:
-    - cron: '13 12 * * *'
+    # 北京时间 20:13 首次触发，后续时段补触发。
+    - cron: '13,43 12-14 * * *'
+    - cron: '3,13,23,43 15 * * *'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'verify 仅验证；checkin 立即补打（会真实提交）'
+        type: choice
+        options: [verify, checkin]
+        default: verify
       verify_login:
-        description: '验证云端重新登录（不提交打卡）'
+        description: '仅验证模式：验证云端重新登录'
         type: boolean
         default: true
       notify_email:
-        description: '发送一封邮件测试通知（不提交打卡）'
+        description: '仅验证模式：发送测试邮件'
         type: boolean
         default: false
+
 permissions:
   contents: read
+
 concurrency:
   group: csu-checkin
   cancel-in-progress: false
+
 jobs:
   checkin:
-    if: github.event_name == 'workflow_dispatch' || vars.CHECKIN_ENABLED == 'true'
+    if: (github.event_name == 'workflow_dispatch' && inputs.mode != 'checkin') || vars.CHECKIN_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CHECKIN_EXECUTION_MODE: ${{ (github.event_name == 'schedule' || inputs.mode == 'checkin') && 'checkin' || 'verify' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -31,25 +44,68 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+      - name: 北京日期
+        id: day
+        run: echo "date=$(TZ=Asia/Shanghai date +%F)" >> "$GITHUB_OUTPUT"
+      - name: 读取当日执行结果
+        if: env.CHECKIN_EXECUTION_MODE == 'checkin'
+        uses: actions/cache/restore@v5
+        with:
+          path: .daily-state
+          key: csu-daily-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: csu-daily-v1-${{ steps.day.outputs.date }}-
+      - name: 避免重复提交
+        id: guard
+        if: env.CHECKIN_EXECUTION_MODE == 'checkin'
+        env:
+          CHECKIN_DAY: ${{ steps.day.outputs.date }}
+        run: python daily_state.py before
       - name: 安装依赖
+        if: steps.guard.outputs.skip != 'true'
         run: python -m pip install -r requirements.txt
       - name: 离线测试
+        if: steps.guard.outputs.skip != 'true'
         run: python -m unittest discover -v
       - name: 手动只查询验证
-        if: github.event_name == 'workflow_dispatch'
+        if: env.CHECKIN_EXECUTION_MODE == 'verify'
         env:
           CHECKIN_AUTH_JSON: ${{ secrets.CHECKIN_AUTH_JSON }}
           CHECKIN_VERIFY_LOGIN: ${{ inputs.verify_login && 'true' || 'false' }}
         run: python cloud_runner.py --dry-run
-      - name: 每日随机打卡
-        if: github.event_name == 'schedule'
+      - name: 每日随机打卡或立即补打
+        if: env.CHECKIN_EXECUTION_MODE == 'checkin' && steps.guard.outputs.skip != 'true'
         env:
           CHECKIN_AUTH_JSON: ${{ secrets.CHECKIN_AUTH_JSON }}
         run: python cloud_runner.py --scheduled
+      - name: 整理最小执行结果
+        id: result
+        if: always() && env.CHECKIN_EXECUTION_MODE == 'checkin'
+        env:
+          CHECKIN_DAY: ${{ steps.day.outputs.date }}
+        run: python daily_state.py capture
+      - name: 保存提交结果防止补触发重复上报
+        if: always() && env.CHECKIN_EXECUTION_MODE == 'checkin' && steps.result.outcome == 'success'
+        uses: actions/cache/save@v5
+        with:
+          path: .daily-state
+          key: csu-daily-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}-checkpoint
       - name: 邮件通知
-        if: always() && (github.event_name == 'schedule' || inputs.notify_email)
+        id: mail
+        if: always() && ((env.CHECKIN_EXECUTION_MODE == 'checkin' && steps.result.outputs.notify == 'true') || (env.CHECKIN_EXECUTION_MODE == 'verify' && inputs.notify_email))
         env:
           SMTP_USERNAME: ${{ secrets.MAIL_SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.MAIL_SMTP_PASSWORD }}
           CHECKIN_JOB_STATUS: ${{ job.status }}
         run: python mail_notify.py
+      - name: 记录邮件发送状态
+        if: always() && env.CHECKIN_EXECUTION_MODE == 'checkin' && steps.result.outcome == 'success'
+        env:
+          CHECKIN_DAY: ${{ steps.day.outputs.date }}
+          CHECKIN_MAIL_SENT: ${{ steps.mail.outcome == 'success' && 'true' || 'false' }}
+        run: python daily_state.py mail
+      - name: 保存去重与邮件结果
+        if: always() && env.CHECKIN_EXECUTION_MODE == 'checkin' && steps.result.outcome == 'success'
+        uses: actions/cache/save@v5
+        with:
+          path: .daily-state
+          key: csu-daily-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}-final
