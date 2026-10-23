@@ -25,6 +25,13 @@ class MailTests(unittest.TestCase):
         self.assertIn('没有提交打卡', message.get_content())
         self.assertNotIn('打卡成功', message['Subject'])
 
+    def test_explicit_manual_checkin_uses_real_outcome(self):
+        message = mail.build_message('sender@example.com', 'target@example.com', {'phase': 'already_checked'},
+                                     event='workflow_dispatch', execution_mode='checkin',
+                                     job_status='success', run_url='test')
+        self.assertIn('今日已打卡', message['Subject'])
+        self.assertNotIn('邮件测试', message['Subject'])
+
     def test_smtp_uses_tls_auth_and_checks_refusal(self):
         env = {'SMTP_USERNAME': 'sender@example.com', 'SMTP_PASSWORD': 'test-credential'}
         for refused, expected in [({}, 0), ({'target@example.com': (550, b'no')}, 1)]:

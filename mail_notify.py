@@ -21,9 +21,9 @@ LABELS = {
 }
 
 
-def build_message(sender, recipient, state, *, event, job_status, run_url, current=None):
+def build_message(sender, recipient, state, *, event, job_status, run_url, current=None, execution_mode='verify'):
     current = current or datetime.now(ZoneInfo('Asia/Shanghai'))
-    if event == 'workflow_dispatch':
+    if event == 'workflow_dispatch' and execution_mode != 'checkin':
         label = '邮件测试与只查询验证' if job_status == 'success' else '手动验证失败'
         detail = '这是手动测试通知，本次没有提交打卡。'
     else:
@@ -39,7 +39,7 @@ def build_message(sender, recipient, state, *, event, job_status, run_url, curre
     message['Date'] = formatdate(localtime=False)
     message['Message-ID'] = make_msgid(domain='qq.com')
     lines = [f'北京时间：{current:%Y-%m-%d %H:%M:%S}', detail]
-    if event == 'schedule' and state.get('planned_at'):
+    if (event == 'schedule' or execution_mode == 'checkin') and state.get('planned_at'):
         lines.append('计划时间：' + str(state['planned_at']))
     lines += ['GitHub 工作流状态：' + job_status, '运行记录：' + run_url,
               '', '此邮件不包含学校账号、密码、Cookie、token 或经纬度。']
@@ -69,6 +69,7 @@ def main():
     try:
         message = build_message(username, recipient, state,
                                 event=os.environ.get('GITHUB_EVENT_NAME', 'workflow_dispatch'),
+                                execution_mode=os.environ.get('CHECKIN_EXECUTION_MODE', 'verify'),
                                 job_status=os.environ.get('CHECKIN_JOB_STATUS', 'unknown'), run_url=run_url)
         # 固定 QQ 官方 SMTP 服务，强制 TLS 与证书校验。
         with smtplib.SMTP_SSL('smtp.qq.com', 465, context=ssl.create_default_context(), timeout=30) as smtp:

@@ -151,7 +151,10 @@ def run_once(submit=False):
         log('学校返回普通平安打卡类型，按官方页面流程直接上报实际位置，不调用留校范围接口。')
     if not submit:
         return {'phase': 'dry_run', 'message': '查询及所需校验通过；检查模式未提交。'}
-    result = client.submit(lng, lat, data['dkbc'], dkdz=os.environ.get('CHECKIN_DKDZ', ''))
+    try:
+        result = client.submit(lng, lat, data['dkbc'], dkdz=os.environ.get('CHECKIN_DKDZ', ''))
+    except (requests.RequestException, ValueError):
+        return {'phase': 'submitted_unconfirmed', 'message': '提交请求异常，结果无法确认；请人工检查，不自动重复提交。'}
     if str(result.get('code')) != '200':
         raise RuntimeError(f'打卡接口未返回成功，状态 {result.get("code")}；不自动重复提交。')
     # 提交只执行一次；后续请求仅用于确认学校确实记录为已打卡。

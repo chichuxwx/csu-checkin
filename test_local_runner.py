@@ -27,7 +27,7 @@ class LocalRunnerTests(unittest.TestCase):
         done = {'date': '2026-10-23', 'phase': 'submitted'}
         self.assertEqual(runner.make_plan(current, done), done)
 
-    def invoke(self, *, submit=False, can=True, kdk=True, already=0, confirmed=True, lx=None, dklb='PA'):
+    def invoke(self, *, submit=False, can=True, kdk=True, already=0, confirmed=True, lx=None, dklb='PA', submit_error=None):
         client = Mock()
         initial = {'code': '200', 'data': {'dkbc': 'test-shift', 'kdk': kdk, 'sfydk': already}}
         if lx is not None:
@@ -35,6 +35,7 @@ class LocalRunnerTests(unittest.TestCase):
         client.query_dkbc.side_effect = [initial] + [{'code': '200', 'data': {'sfydk': int(confirmed)}}] * 3
         client.check_range.return_value = {'code': '200', 'data': {'canDk': can}}
         client.submit.return_value = {'code': '200'}
+        client.submit.side_effect = submit_error
         with patch.dict(os.environ, {'CHECKIN_LNG': '110.0', 'CHECKIN_LAT': '30.0', 'CHECKIN_COORD': 'gcj02', 'CHECKIN_DKLB': dklb}), \
                 patch.object(runner.time, 'sleep'), patch.object(runner, 'load_environment'), patch.object(runner, 'get_auth', return_value=('test', 'test')), \
                 patch.object(runner, 'CheckinClient', return_value=client):
@@ -103,6 +104,12 @@ class LocalRunnerTests(unittest.TestCase):
         current = datetime(2026, 10, 23, 20, 18, tzinfo=runner.ZONE)
         previous = {'date': current.date().isoformat(), **result}
         self.assertEqual(runner.make_plan(current, previous), previous)
+
+    def test_submit_timeout_requires_confirmation_before_retry(self):
+        result, client = self.invoke(submit=True, lx=3, submit_error=runner.requests.Timeout())
+        self.assertEqual(result['phase'], 'submitted_unconfirmed')
+        self.assertEqual(client.submit.call_count, 1)
+        self.assertEqual(client.query_dkbc.call_count, 1)
 
     def run_scheduled_at(self, current, previous=None, result=None):
         from contextlib import nullcontext
