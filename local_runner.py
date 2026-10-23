@@ -138,13 +138,19 @@ def run_once(submit=False):
         return {'phase': 'outside_period', 'message': '学校当前不允许打卡，未提交。'}
     if not data.get('dkbc'):
         raise RuntimeError('学校未返回有效打卡班次，未提交。')
-    checked = client.check_range(lng, lat, dklb)
-    if str(checked.get('code')) != '200' or not isinstance(checked.get('data'), dict):
-        raise RuntimeError('位置校验失败，未提交。')
-    if not true(checked['data'].get('canDk')):
-        return {'phase': 'out_of_range', 'message': '配置坐标未通过学校范围校验，未提交。'}
+    # 学校 H5 仅对 lx=2 的留校考勤调用范围接口；普通 PA 仍上报实际位置。
+    # 未识别类型继续校验，避免把接口字段变化当成无需校验。
+    check_scope = dklb != 'PA' or str(data.get('lx')) not in {'0', '1', '3'}
+    if check_scope:
+        checked = client.check_range(lng, lat, dklb)
+        if str(checked.get('code')) != '200' or not isinstance(checked.get('data'), dict):
+            raise RuntimeError('位置校验失败，未提交。')
+        if not true(checked['data'].get('canDk')):
+            return {'phase': 'out_of_range', 'message': '配置坐标未通过学校范围校验，未提交。'}
+    else:
+        log('学校返回普通平安打卡类型，按官方页面流程直接上报实际位置，不调用留校范围接口。')
     if not submit:
-        return {'phase': 'dry_run', 'message': '查询及位置校验通过；检查模式未提交。'}
+        return {'phase': 'dry_run', 'message': '查询及所需校验通过；检查模式未提交。'}
     result = client.submit(lng, lat, data['dkbc'], dkdz=os.environ.get('CHECKIN_DKDZ', ''))
     if str(result.get('code')) != '200':
         raise RuntimeError(f'打卡接口未返回成功，状态 {result.get("code")}；不自动重复提交。')

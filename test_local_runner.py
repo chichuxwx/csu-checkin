@@ -27,13 +27,15 @@ class LocalRunnerTests(unittest.TestCase):
         done = {'date': '2026-10-23', 'phase': 'submitted'}
         self.assertEqual(runner.make_plan(current, done), done)
 
-    def invoke(self, *, submit=False, can=True, kdk=True, already=0, confirmed=True):
+    def invoke(self, *, submit=False, can=True, kdk=True, already=0, confirmed=True, lx=None, dklb='PA'):
         client = Mock()
         initial = {'code': '200', 'data': {'dkbc': 'test-shift', 'kdk': kdk, 'sfydk': already}}
+        if lx is not None:
+            initial['data']['lx'] = lx
         client.query_dkbc.side_effect = [initial] + [{'code': '200', 'data': {'sfydk': int(confirmed)}}] * 3
         client.check_range.return_value = {'code': '200', 'data': {'canDk': can}}
         client.submit.return_value = {'code': '200'}
-        with patch.dict(os.environ, {'CHECKIN_LNG': '110.0', 'CHECKIN_LAT': '30.0', 'CHECKIN_COORD': 'gcj02'}), \
+        with patch.dict(os.environ, {'CHECKIN_LNG': '110.0', 'CHECKIN_LAT': '30.0', 'CHECKIN_COORD': 'gcj02', 'CHECKIN_DKLB': dklb}), \
                 patch.object(runner.time, 'sleep'), patch.object(runner, 'load_environment'), patch.object(runner, 'get_auth', return_value=('test', 'test')), \
                 patch.object(runner, 'CheckinClient', return_value=client):
             result = runner.run_once(submit=submit)
@@ -49,6 +51,34 @@ class LocalRunnerTests(unittest.TestCase):
         result, client = self.invoke(submit=True, can=False)
         self.assertEqual(result['phase'], 'out_of_range')
         client.submit.assert_not_called()
+
+    def test_regular_pa_does_not_use_inapplicable_range_endpoint(self):
+        for lx in (0, 1, 3, '3'):
+            with self.subTest(lx=lx):
+                result, client = self.invoke(submit=True, can=False, lx=lx)
+                self.assertEqual(result['phase'], 'submitted')
+                client.check_range.assert_not_called()
+                client.submit.assert_called_once_with(110.0, 30.0, 'test-shift', dkdz='')
+
+    def test_regular_pa_dry_run_never_submits(self):
+        result, client = self.invoke(lx=3, can=False)
+        self.assertEqual(result['phase'], 'dry_run')
+        client.check_range.assert_not_called()
+        client.submit.assert_not_called()
+
+    def test_stay_on_campus_still_enforces_range(self):
+        result, client = self.invoke(submit=True, lx=2, dklb='LX', can=False)
+        self.assertEqual(result['phase'], 'out_of_range')
+        client.check_range.assert_called_once_with(110.0, 30.0, 'LX')
+        client.submit.assert_not_called()
+
+    def test_unknown_pa_type_still_enforces_range(self):
+        for lx in (None, '', 99):
+            with self.subTest(lx=lx):
+                result, client = self.invoke(submit=True, lx=lx, can=False)
+                self.assertEqual(result['phase'], 'out_of_range')
+                client.check_range.assert_called_once_with(110.0, 30.0, 'PA')
+                client.submit.assert_not_called()
 
     def test_already_checked_never_submits(self):
         result, client = self.invoke(submit=True, already='1')
