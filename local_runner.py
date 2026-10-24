@@ -151,6 +151,8 @@ def run_once(submit=False):
         log('学校返回普通平安打卡类型，按官方页面流程直接上报实际位置，不调用留校范围接口。')
     if not submit:
         return {'phase': 'dry_run', 'message': '查询及所需校验通过；检查模式未提交。'}
+    # 必须在请求发出前落盘；只有到达此处，中断后才存在重复上报风险。
+    write_json(STATE, {'date': now().date().isoformat(), 'phase': 'submitting'})
     try:
         result = client.submit(lng, lat, data['dkbc'], dkdz=os.environ.get('CHECKIN_DKDZ', ''))
     except (requests.RequestException, ValueError):
@@ -183,7 +185,13 @@ def exclusive():
 
 def scheduled():
     with exclusive():
-        state = make_plan(now(), read_json(STATE))
+        current = now()
+        if os.environ.get('GITHUB_EVENT_NAME') == 'schedule' and current < window(current)[0]:
+            write_json(STATE, {'date': current.date().isoformat(), 'phase': 'window_closed',
+                              'message': '定时任务在当晚计划时段之前到达，可能已延迟跨日；不等待到下一晚，也未提交。'})
+            log('定时任务到达时间不在当晚执行时段，停止等待，未提交。')
+            return 1
+        state = make_plan(current, read_json(STATE))
         write_json(STATE, state)
         if state.get('phase') in NO_RESUBMIT:
             log('今日已有提交记录，不再重复提交。')
@@ -197,6 +205,8 @@ def scheduled():
         if now().date().isoformat() != state['date']:
             state.update(phase='window_closed', message='任务等待期间已跨日，不提交上一日的打卡。')
         else:
+            state['phase'] = 'checking'
+            write_json(STATE, state)
             try:
                 state.update(run_once(submit=True))
             except (LoginError, requests.RequestException, ValueError, KeyError, RuntimeError) as exc:

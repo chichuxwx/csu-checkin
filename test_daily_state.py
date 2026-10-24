@@ -56,10 +56,32 @@ class DailyStateTests(unittest.TestCase):
         state.mark_mail(self.root, self.day, True)
         self.assertFalse(state.capture(self.root, self.day)['notify'])
 
-    def test_interrupted_attempt_blocks_automatic_repost(self):
-        self.current('waiting')
+    def test_interrupted_submission_blocks_automatic_repost(self):
+        self.current('submitting')
         state.capture(self.root, self.day)
         self.assertTrue(state.before(self.root, self.day)['blocked'])
+
+    def test_interrupted_waiting_or_query_allows_later_retry(self):
+        for phase in ('waiting', 'planned', 'checking'):
+            with self.subTest(phase=phase):
+                self.current(phase)
+                state.capture(self.root, self.day)
+                self.assertFalse(state.before(self.root, self.day)['skip'])
+
+    def test_verified_legacy_recovery_requires_exact_source(self):
+        self.cached('submitted_unconfirmed', notified=True)
+        for key in ('csu-daily-v1-2026-10-23-123-1-final', 'csu-daily-v1-2026-10-22-456-1-final', ''):
+            with self.assertRaises(ValueError):
+                state.recover_waiting(self.root, self.day, '456', key)
+        self.assertTrue(state.before(self.root, self.day)['blocked'])
+        state.recover_waiting(self.root, self.day, '456', 'csu-daily-v1-2026-10-23-456-1-final')
+        self.assertFalse(state.before(self.root, self.day)['skip'])
+
+    def test_recovery_never_changes_confirmed_success(self):
+        self.cached('submitted')
+        with self.assertRaises(ValueError):
+            state.recover_waiting(self.root, self.day, '456', 'csu-daily-v1-2026-10-23-456-1-final')
+        self.assertTrue(state.before(self.root, self.day)['skip'])
 
     def test_cache_whitelist_excludes_private_values(self):
         self.cached('submitted', notified=True)

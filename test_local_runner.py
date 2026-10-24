@@ -37,7 +37,7 @@ class LocalRunnerTests(unittest.TestCase):
         client.submit.return_value = {'code': '200'}
         client.submit.side_effect = submit_error
         with patch.dict(os.environ, {'CHECKIN_LNG': '110.0', 'CHECKIN_LAT': '30.0', 'CHECKIN_COORD': 'gcj02', 'CHECKIN_DKLB': dklb}), \
-                patch.object(runner.time, 'sleep'), patch.object(runner, 'load_environment'), patch.object(runner, 'get_auth', return_value=('test', 'test')), \
+                patch.object(runner.time, 'sleep'), patch.object(runner, 'write_json'), patch.object(runner, 'load_environment'), patch.object(runner, 'get_auth', return_value=('test', 'test')), \
                 patch.object(runner, 'CheckinClient', return_value=client):
             result = runner.run_once(submit=submit)
         return result, client
@@ -164,6 +164,29 @@ class LocalRunnerTests(unittest.TestCase):
         status, run = self.run_scheduled_at(current, {'date': '2026-10-23', 'phase': 'submitted'})
         self.assertEqual(status, 0)
         run.assert_not_called()
+
+    def test_cross_day_cloud_schedule_never_waits_or_calls_school(self):
+        for hour in (2, 3, 19):
+            with self.subTest(hour=hour), patch.dict(os.environ, {'GITHUB_EVENT_NAME': 'schedule'}), \
+                    patch.object(runner.time, 'sleep') as sleep:
+                status, run = self.run_scheduled_at(datetime(2026, 10, 25, hour, 0, tzinfo=runner.ZONE))
+                self.assertEqual(status, 1)
+                run.assert_not_called()
+                sleep.assert_not_called()
+
+    def test_submission_marker_is_persisted_before_network(self):
+        seen = []
+        client = Mock()
+        client.query_dkbc.return_value = {'code': 200, 'data': {'kdk': True, 'sfydk': 0, 'lx': 3, 'dkbc': 'test'}}
+        def submit(*args, **kwargs):
+            self.assertEqual(seen[-1]['phase'], 'submitting')
+            raise runner.requests.Timeout()
+        client.submit.side_effect = submit
+        with patch.dict(os.environ, {'CHECKIN_LNG': '110', 'CHECKIN_LAT': '30', 'CHECKIN_DKLB': 'PA', 'CHECKIN_COORD': 'gcj02'}), \
+                patch.object(runner, 'load_environment'), patch.object(runner, 'get_auth', return_value=('test', 'test')), \
+                patch.object(runner, 'CheckinClient', return_value=client), \
+                patch.object(runner, 'write_json', side_effect=lambda path, value: seen.append(dict(value))):
+            self.assertEqual(runner.run_once(submit=True)['phase'], 'submitted_unconfirmed')
 
 
 if __name__ == '__main__':
