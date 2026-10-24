@@ -21,6 +21,10 @@ on:
         description: '仅验证模式：发送测试邮件'
         type: boolean
         default: false
+      recover_waiting_run:
+        description: '仅 verify：已核实未进入提交的旧运行 ID，用于恢复误拦截；不确定请留空'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -48,12 +52,27 @@ jobs:
         id: day
         run: echo "date=$(TZ=Asia/Shanghai date +%F)" >> "$GITHUB_OUTPUT"
       - name: 读取当日执行结果
-        if: env.CHECKIN_EXECUTION_MODE == 'checkin'
+        id: restored
+        if: env.CHECKIN_EXECUTION_MODE == 'checkin' || inputs.recover_waiting_run != ''
         uses: actions/cache/restore@v5
         with:
           path: .daily-state
           key: csu-daily-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: csu-daily-v1-${{ steps.day.outputs.date }}-
+      - name: 恢复已核实仅等待中断的旧缓存
+        id: recovery
+        if: env.CHECKIN_EXECUTION_MODE == 'verify' && inputs.recover_waiting_run != ''
+        env:
+          CHECKIN_DAY: ${{ steps.day.outputs.date }}
+          CHECKIN_RECOVER_RUN: ${{ inputs.recover_waiting_run }}
+          CHECKIN_CACHE_KEY: ${{ steps.restored.outputs.cache-matched-key }}
+        run: python daily_state.py recover-waiting
+      - name: 保存人工核实后的恢复记录
+        if: steps.recovery.outcome == 'success'
+        uses: actions/cache/save@v5
+        with:
+          path: .daily-state
+          key: csu-daily-v1-${{ steps.day.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}-recovery
       - name: 避免重复提交
         id: guard
         if: env.CHECKIN_EXECUTION_MODE == 'checkin'
